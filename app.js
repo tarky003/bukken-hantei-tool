@@ -145,6 +145,9 @@ function parseListingText(text) {
   result.cityPlanning = grab([/都市計画[:：]?\s*([^\n,、]+)/]);
   result.occupancy = grab([/(?:現況|入居状況)[:：]?\s*([^\n,、]+)/]);
 
+  // 再建築不可(備考・接道欄などテキスト全体から検出)。「再建築可」は「建築不可」を含まないため誤検出しない
+  result.notRebuildable = /再建築不可|建築不可/.test(text);
+
   // 物件種別(建て方): 統計相場の単価選択に使用
   if (/一戸建|１戸建|1戸建|戸建/.test(text)) {
     result.buildingType = 'house';
@@ -163,6 +166,9 @@ function getExclusionReasons(p) {
   const cp = (p.cityPlanning || '').trim();
   if (cp.includes('調整区域')) {
     reasons.push('都市計画が「市街化調整区域」(原則建築不可のため)');
+  }
+  if (p.notRebuildable) {
+    reasons.push('再建築不可の物件');
   }
   const occ = (p.occupancy || '');
   if (occ.includes('居住中')) {
@@ -630,6 +636,7 @@ function fillForm(p) {
   document.getElementById('f_cityPlanning').value = p.cityPlanning || '';
   document.getElementById('f_occupancy').value = p.occupancy || '';
   document.getElementById('f_rentBasisArea').value = p.rentBasisArea || '';
+  document.getElementById('f_notRebuildable').checked = !!p.notRebuildable;
   footprintFieldEstimated = !!p.footprintEstimated;
   coverageFieldEstimated = !!p.coverageEstimated;
   farFieldEstimated = !!p.farEstimated;
@@ -681,6 +688,7 @@ function saveForm() {
     farDesignated: Number(document.getElementById('f_farDesignated').value) || 0,
     cityPlanning: document.getElementById('f_cityPlanning').value.trim(),
     occupancy: document.getElementById('f_occupancy').value.trim(),
+    notRebuildable: document.getElementById('f_notRebuildable').checked,
     rentBasisArea: Number(document.getElementById('f_rentBasisArea').value) || 0,
     comps: readCompRows()
   };
@@ -730,6 +738,7 @@ function applyParsedText(rawText) {
   useZoneParsed = parsed.useZone || '';
   document.getElementById('f_cityPlanning').value = parsed.cityPlanning || '';
   document.getElementById('f_occupancy').value = parsed.occupancy || '';
+  document.getElementById('f_notRebuildable').checked = !!parsed.notRebuildable;
 }
 
 document.getElementById('btnParse').addEventListener('click', () => {

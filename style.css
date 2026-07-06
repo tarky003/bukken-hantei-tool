@@ -296,6 +296,17 @@ table.comp-table td:first-child input { text-align: left; }
   margin-bottom: 18px;
 }
 .form-grid label { font-size: 12px; font-weight: 600; color: var(--color-muted); display: flex; flex-direction: column; gap: 4px; }
+.form-grid .checkbox-field {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-text);
+  font-weight: 600;
+}
+.form-grid .checkbox-field input {
+  width: auto;
+}
+
 .form-grid input,
 .form-grid select {
   border: 1px solid var(--color-border);
