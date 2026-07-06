@@ -82,6 +82,9 @@ function parseListingText(text) {
   const priceStr = grab([/(?:価格|売買価格|販売価格)[:：]?\s*([\d,，]+)\s*万円/]);
   result.price = priceStr ? Number(priceStr.replace(/[,，]/g, '')) : '';
 
+  // 諸費用は販売価格の7%(概算)を自動入力
+  result.costs = result.price > 0 ? Math.round(result.price * 0.07) : '';
+
   const landStr = grab([/(?:土地面積|敷地面積)[:：]?\s*([\d,，.]+)\s*(?:m²|m2|㎡)/]);
   result.landArea = landStr ? Number(landStr.replace(/[,，]/g, '')) : '';
 
@@ -714,6 +717,7 @@ function applyParsedText(rawText) {
   document.getElementById('f_structure').value = parsed.structure || '';
   document.getElementById('f_builtYear').value = parsed.builtYear || '';
   document.getElementById('f_price').value = parsed.price || '';
+  document.getElementById('f_costs').value = parsed.costs || '';
   document.getElementById('f_landArea').value = parsed.landArea || '';
   document.getElementById('f_footprintArea').value = parsed.footprintArea || '';
   footprintFieldEstimated = !!parsed.footprintEstimated;
