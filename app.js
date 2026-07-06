@@ -29,6 +29,7 @@ let properties = loadProperties();
 let settings = loadSettings();
 let editingId = null; // null = new property
 let openDetailIds = new Set();
+let footprintFieldEstimated = false; // 建築面積欄が自動推定値かどうか(手入力で解除)
 
 /* ---------- parsing ---------- */
 function parseListingText(text) {
@@ -74,6 +75,12 @@ function parseListingText(text) {
     result.floors = 1;
   } else {
     result.floors = '';
+  }
+
+  // 建築面積の記載がなく、延床面積と階数が分かる場合は「延床÷階数」で推定して入力
+  if (!result.footprintArea && result.totalFloorArea > 0 && result.floors > 0) {
+    result.footprintArea = Math.round((result.totalFloorArea / result.floors) * 100) / 100;
+    result.footprintEstimated = true;
   }
 
   // combined 建ぺい率／容積率 pattern
@@ -123,7 +130,7 @@ function checkRatios(p) {
 
   // 建築面積が未記載の場合は延床面積÷階数で推定(各階同面積と仮定した概算)
   let footprint = p.footprintArea > 0 ? p.footprintArea : 0;
-  let footprintEstimated = false;
+  let footprintEstimated = !!p.footprintEstimated && footprint > 0;
   if (!footprint && p.totalFloorArea > 0 && p.floors > 0) {
     footprint = p.totalFloorArea / p.floors;
     footprintEstimated = true;
@@ -554,6 +561,7 @@ function fillForm(p) {
   document.getElementById('f_cityPlanning').value = p.cityPlanning || '';
   document.getElementById('f_occupancy').value = p.occupancy || '';
   document.getElementById('f_rentBasisArea').value = p.rentBasisArea || '';
+  footprintFieldEstimated = !!p.footprintEstimated;
 
   clearCompRows();
   (p.comps && p.comps.length ? p.comps : []).forEach(c => addCompRow(c));
@@ -604,6 +612,7 @@ function saveForm() {
     rentBasisArea: Number(document.getElementById('f_rentBasisArea').value) || 0,
     comps: readCompRows()
   };
+  data.footprintEstimated = footprintFieldEstimated && data.footprintArea > 0;
 
   if (editingId) {
     const idx = properties.findIndex(p => p.id === editingId);
@@ -622,6 +631,8 @@ document.getElementById('btnNewProperty').addEventListener('click', () => openFo
 document.getElementById('btnCancel').addEventListener('click', closeForm);
 document.getElementById('btnSave').addEventListener('click', saveForm);
 document.getElementById('btnAddComp').addEventListener('click', () => addCompRow());
+// 建築面積を手入力したら「推定値」フラグを解除(実測値として扱う)
+document.getElementById('f_footprintArea').addEventListener('input', () => { footprintFieldEstimated = false; });
 function applyParsedText(rawText) {
   const parsed = parseListingText(rawText);
   document.getElementById('f_address').value = parsed.address || '';
@@ -631,6 +642,7 @@ function applyParsedText(rawText) {
   document.getElementById('f_price').value = parsed.price || '';
   document.getElementById('f_landArea').value = parsed.landArea || '';
   document.getElementById('f_footprintArea').value = parsed.footprintArea || '';
+  footprintFieldEstimated = !!parsed.footprintEstimated;
   document.getElementById('f_floors').value = parsed.floors || '';
   document.getElementById('f_totalFloorArea').value = parsed.totalFloorArea || '';
   document.getElementById('f_coverageDesignated').value = parsed.coverageDesignated || '';
