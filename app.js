@@ -93,10 +93,8 @@ function parseListingText(text) {
 function getExclusionReasons(p) {
   const reasons = [];
   const cp = (p.cityPlanning || '').trim();
-  if (!cp) {
-    reasons.push('都市計画欄が空欄');
-  } else if (cp.replace(/\s/g, '') === '市街化区域') {
-    reasons.push('都市計画が「市街化区域」のみ(用途地域等の詳細記載なし)');
+  if (cp.includes('調整区域')) {
+    reasons.push('都市計画が「市街化調整区域」(原則建築不可のため)');
   }
   const occ = (p.occupancy || '');
   if (occ.includes('居住中')) {
