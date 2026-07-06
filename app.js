@@ -1,0 +1,531 @@
+'use strict';
+
+/* ---------- storage ---------- */
+const STORAGE_KEY = 'propertyJudgeTool.properties';
+const SETTINGS_KEY = 'propertyJudgeTool.settings';
+
+function loadProperties() {
+  try {
+    return JSON.parse(localStorage.getItem(STORAGE_KEY)) || [];
+  } catch (e) {
+    return [];
+  }
+}
+function saveProperties(list) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
+}
+function loadSettings() {
+  try {
+    return Object.assign({ selfFundRatio: 20 }, JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {});
+  } catch (e) {
+    return { selfFundRatio: 20 };
+  }
+}
+function saveSettings(settings) {
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+}
+
+let properties = loadProperties();
+let settings = loadSettings();
+let editingId = null; // null = new property
+let openDetailIds = new Set();
+
+/* ---------- parsing ---------- */
+function parseListingText(text) {
+  const result = {};
+
+  const grab = (patterns) => {
+    for (const p of patterns) {
+      const m = text.match(p);
+      if (m) return m[1].trim();
+    }
+    return '';
+  };
+
+  result.address = grab([/(?:所在地|住所)[:：]?\s*([^\n]+)/]);
+  result.structure = grab([/構造[:：]?\s*([^\n,、]+)/]);
+  result.builtYear = grab([/(?:築年月|建築年月|完成時期)[:：]?\s*([^\n,、]+)/]);
+
+  const priceStr = grab([/(?:価格|売買価格|販売価格)[:：]?\s*([\d,，]+)\s*万円/]);
+  result.price = priceStr ? Number(priceStr.replace(/[,，]/g, '')) : '';
+
+  const landStr = grab([/(?:土地面積|敷地面積)[:：]?\s*([\d,，.]+)\s*(?:m²|m2|㎡)/]);
+  result.landArea = landStr ? Number(landStr.replace(/[,，]/g, '')) : '';
+
+  const footprintStr = grab([/建築面積[:：]?\s*([\d,，.]+)\s*(?:m²|m2|㎡)/]);
+  result.footprintArea = footprintStr ? Number(footprintStr.replace(/[,，]/g, '')) : '';
+
+  const totalFloorStr = grab([/(?:延床面積|延べ床面積)[:：]?\s*([\d,，.]+)\s*(?:m²|m2|㎡)/, /建物面積[:：]?\s*([\d,，.]+)\s*(?:m²|m2|㎡)/]);
+  result.totalFloorArea = totalFloorStr ? Number(totalFloorStr.replace(/[,，]/g, '')) : '';
+
+  // combined 建ぺい率／容積率 pattern
+  const combined = text.match(/建(?:ぺい|蔽)率\s*[／\/]\s*容積率[:：]?\s*([\d.]+)\s*%\s*[／\/]\s*([\d.]+)\s*%/);
+  if (combined) {
+    result.coverageDesignated = Number(combined[1]);
+    result.farDesignated = Number(combined[2]);
+  } else {
+    const cov = grab([/(?:建ぺい率|建蔽率)[:：]?\s*([\d.]+)\s*%/]);
+    const far = grab([/容積率[:：]?\s*([\d.]+)\s*%/]);
+    result.coverageDesignated = cov ? Number(cov) : '';
+    result.farDesignated = far ? Number(far) : '';
+  }
+
+  result.cityPlanning = grab([/都市計画[:：]?\s*([^\n,、]+)/]);
+  result.occupancy = grab([/(?:現況|入居状況)[:：]?\s*([^\n,、]+)/]);
+
+  return result;
+}
+
+/* ---------- filter logic ---------- */
+function getExclusionReasons(p) {
+  const reasons = [];
+  const cp = (p.cityPlanning || '').trim();
+  if (!cp) {
+    reasons.push('都市計画欄が空欄');
+  } else if (cp.replace(/\s/g, '') === '市街化区域') {
+    reasons.push('都市計画が「市街化区域」のみ(用途地域等の詳細記載なし)');
+  }
+  const occ = (p.occupancy || '');
+  if (occ.includes('居住中')) {
+    reasons.push('現況が「居住中」');
+  }
+  return reasons;
+}
+
+/* ---------- ratio (建蔽率/容積率) check ---------- */
+function checkRatios(p) {
+  const out = { coverage: null, far: null };
+
+  if (p.landArea > 0 && p.footprintArea > 0 && p.coverageDesignated > 0) {
+    const actual = (p.footprintArea / p.landArea) * 100;
+    out.coverage = {
+      actual,
+      designated: p.coverageDesignated,
+      ok: actual <= p.coverageDesignated + 0.01
+    };
+  }
+  if (p.landArea > 0 && p.totalFloorArea > 0 && p.farDesignated > 0) {
+    const actual = (p.totalFloorArea / p.landArea) * 100;
+    out.far = {
+      actual,
+      designated: p.farDesignated,
+      ok: actual <= p.farDesignated + 0.01
+    };
+  }
+  return out;
+}
+
+/* ---------- rent estimation ---------- */
+function estimateRent(p) {
+  const comps = (p.comps || []).filter(c => c.area > 0 && c.rent > 0);
+  if (comps.length === 0) return null;
+
+  const unitRents = comps.map(c => c.rent / c.area); // 万円/月/m2
+  const avgUnitRent = unitRents.reduce((a, b) => a + b, 0) / unitRents.length;
+
+  const basisArea = p.rentBasisArea > 0 ? p.rentBasisArea : (p.totalFloorArea || 0);
+  if (!basisArea) return { avgUnitRent, basisArea: 0, monthlyRent: null, annualRent: null };
+
+  const monthlyRent = avgUnitRent * basisArea;
+  return { avgUnitRent, basisArea, monthlyRent, annualRent: monthlyRent * 12 };
+}
+
+/* ---------- yield ---------- */
+function calcYield(p, rentInfo) {
+  if (!rentInfo || !rentInfo.annualRent || !p.price) return null;
+  const costs = p.costs > 0 ? p.costs : p.price * 0.07;
+  const surfaceYield = (rentInfo.annualRent / p.price) * 100;
+  const totalYield = (rentInfo.annualRent / (p.price + costs)) * 100;
+  return { surfaceYield, totalYield, costsUsed: costs };
+}
+
+/* ---------- loan simulation (元金均等返済) ---------- */
+const LOAN_RATE = 0.03;
+const LOAN_YEARS = 10;
+
+function buildLoanSchedule(loanAmount) {
+  const months = LOAN_YEARS * 12;
+  const monthlyPrincipal = loanAmount / months;
+  const monthlyRate = LOAN_RATE / 12;
+  let balance = loanAmount;
+  let cumulative = 0;
+  const rows = [];
+  for (let m = 1; m <= months; m++) {
+    const interest = balance * monthlyRate;
+    const payment = monthlyPrincipal + interest;
+    balance = Math.max(balance - monthlyPrincipal, 0);
+    cumulative += payment;
+    rows.push({ month: m, principal: monthlyPrincipal, interest, payment, cumulative, balance });
+  }
+  return rows;
+}
+
+function buildYearlySummary(monthlyRows) {
+  const years = [];
+  for (let y = 0; y < LOAN_YEARS; y++) {
+    const slice = monthlyRows.slice(y * 12, y * 12 + 12);
+    const principal = slice.reduce((a, r) => a + r.principal, 0);
+    const interest = slice.reduce((a, r) => a + r.interest, 0);
+    const payment = slice.reduce((a, r) => a + r.payment, 0);
+    const endBalance = slice[slice.length - 1].balance;
+    years.push({ year: y + 1, principal, interest, payment, endBalance });
+  }
+  return years;
+}
+
+/* ---------- formatting helpers ---------- */
+const fmt = (n, digits = 0) => {
+  if (n === null || n === undefined || Number.isNaN(n)) return '-';
+  return Number(n).toLocaleString('ja-JP', { minimumFractionDigits: digits, maximumFractionDigits: digits });
+};
+
+/* ---------- rendering ---------- */
+function render() {
+  document.getElementById('selfFundRatio').value = settings.selfFundRatio;
+  const list = document.getElementById('propertyList');
+  list.innerHTML = '';
+
+  if (properties.length === 0) {
+    list.innerHTML = '<div class="empty-state">まだ物件が登録されていません。「＋ 物件を追加」から登録してください。</div>';
+    return;
+  }
+
+  properties.forEach(p => {
+    list.appendChild(renderCard(p));
+  });
+}
+
+function renderCard(p) {
+  const card = document.createElement('div');
+  card.className = 'property-card';
+  card.dataset.id = p.id;
+
+  const reasons = getExclusionReasons(p);
+  const excluded = reasons.length > 0;
+  const ratios = checkRatios(p);
+  const rentInfo = estimateRent(p);
+  const yieldInfo = calcYield(p, rentInfo);
+
+  const filterBadge = excluded
+    ? `<span class="badge badge-ng">除外</span>`
+    : `<span class="badge badge-ok">対象</span>`;
+
+  let ratioBadge = `<span class="badge badge-muted">判定不可</span>`;
+  if (ratios.coverage || ratios.far) {
+    const bothOk = (!ratios.coverage || ratios.coverage.ok) && (!ratios.far || ratios.far.ok);
+    ratioBadge = bothOk
+      ? `<span class="badge badge-ok">適正</span>`
+      : `<span class="badge badge-ng">超過あり</span>`;
+  }
+
+  const summary = document.createElement('div');
+  summary.className = 'card-summary';
+  summary.innerHTML = `
+    <div class="card-summary-main">
+      <div class="card-title">${escapeHtml(p.address || '(住所未入力)')}</div>
+      <div class="card-sub">${escapeHtml(p.structure || '')} ${p.price ? '・' + fmt(p.price) + '万円' : ''}</div>
+    </div>
+    <div class="card-summary-metrics">
+      <div class="metric"><div class="value">${filterBadge}</div><div class="label">フィルタ</div></div>
+      <div class="metric"><div class="value">${ratioBadge}</div><div class="label">建蔽率/容積率</div></div>
+      <div class="metric"><div class="value">${yieldInfo ? fmt(yieldInfo.surfaceYield, 1) + '%' : '-'}</div><div class="label">表面利回り</div></div>
+    </div>
+    <div class="card-actions">
+      <button class="btn-secondary btn-small btn-edit">編集</button>
+      <button class="btn-danger btn-delete">削除</button>
+    </div>
+  `;
+  summary.addEventListener('click', (e) => {
+    if (e.target.closest('.btn-edit') || e.target.closest('.btn-delete')) return;
+    toggleDetail(p.id);
+  });
+  summary.querySelector('.btn-edit').addEventListener('click', () => openForm(p.id));
+  summary.querySelector('.btn-delete').addEventListener('click', () => deleteProperty(p.id));
+
+  card.appendChild(summary);
+
+  const detail = document.createElement('div');
+  detail.className = 'card-detail' + (openDetailIds.has(p.id) ? ' open' : '');
+  detail.innerHTML = renderDetail(p, reasons, ratios, rentInfo, yieldInfo);
+  card.appendChild(detail);
+
+  return card;
+}
+
+function renderDetail(p, reasons, ratios, rentInfo, yieldInfo) {
+  const loanAmount = (p.price || 0) * (1 - settings.selfFundRatio / 100);
+  const monthlyRows = loanAmount > 0 ? buildLoanSchedule(loanAmount) : [];
+  const yearlyRows = monthlyRows.length ? buildYearlySummary(monthlyRows) : [];
+
+  const ratioRow = (label, r) => {
+    if (!r) return `<div><span class="k">${label}</span><span class="v">判定不可(面積または指定値の未入力)</span></div>`;
+    const status = r.ok ? '<span class="badge badge-ok">適正</span>' : '<span class="badge badge-ng">超過</span>';
+    return `<div><span class="k">${label}</span><span class="v">実際 ${fmt(r.actual, 1)}% / 指定 ${fmt(r.designated, 1)}% ${status}</span></div>`;
+  };
+
+  return `
+    <div class="detail-section">
+      <h3>フィルタ判定</h3>
+      ${reasons.length
+        ? `<div class="badge badge-ng">除外対象</div><ul class="reason-list">${reasons.map(r => `<li>${escapeHtml(r)}</li>`).join('')}</ul>`
+        : `<div class="badge badge-ok">除外条件に該当なし</div>`}
+      <div class="kv-grid" style="margin-top:10px;">
+        <div><span class="k">都市計画</span><span class="v">${escapeHtml(p.cityPlanning || '(未入力)')}</span></div>
+        <div><span class="k">現況</span><span class="v">${escapeHtml(p.occupancy || '(未入力)')}</span></div>
+      </div>
+    </div>
+
+    <div class="detail-section">
+      <h3>建蔽率・容積率の適正性(記載値ベースの簡易判定)</h3>
+      <div class="kv-grid">
+        ${ratioRow('建蔽率', ratios.coverage)}
+        ${ratioRow('容積率', ratios.far)}
+      </div>
+    </div>
+
+    <div class="detail-section">
+      <h3>近隣家賃相場・想定家賃</h3>
+      <table class="comp-table" data-role="comp-table-view">
+        <thead><tr><th>住所/物件名</th><th>面積(m²)</th><th>家賃(万円/月)</th><th>㎡単価(万円)</th></tr></thead>
+        <tbody>
+          ${(p.comps || []).map(c => `<tr><td style="text-align:left">${escapeHtml(c.address || '')}</td><td>${fmt(c.area, 1)}</td><td>${fmt(c.rent, 2)}</td><td>${c.area > 0 ? fmt(c.rent / c.area, 4) : '-'}</td></tr>`).join('') || '<tr><td colspan="4" style="text-align:center;color:#999;">類似物件が未登録です(編集から追加してください)</td></tr>'}
+        </tbody>
+      </table>
+      <div class="kv-grid" style="margin-top:10px;">
+        <div><span class="k">平均㎡単価</span><span class="v">${rentInfo && rentInfo.avgUnitRent ? fmt(rentInfo.avgUnitRent, 4) + ' 万円/m²' : '-'}</span></div>
+        <div><span class="k">算出基準面積</span><span class="v">${rentInfo ? fmt(rentInfo.basisArea, 1) + ' m²' : '-'}</span></div>
+        <div><span class="k">想定月額家賃</span><span class="v">${rentInfo && rentInfo.monthlyRent ? fmt(rentInfo.monthlyRent, 1) + ' 万円' : '-'}</span></div>
+        <div><span class="k">想定年間家賃</span><span class="v">${rentInfo && rentInfo.annualRent ? fmt(rentInfo.annualRent, 1) + ' 万円' : '-'}</span></div>
+      </div>
+    </div>
+
+    <div class="detail-section">
+      <h3>想定利回り</h3>
+      <div class="kv-grid">
+        <div><span class="k">表面利回り</span><span class="v">${yieldInfo ? fmt(yieldInfo.surfaceYield, 2) + '%' : '-'}</span></div>
+        <div><span class="k">総事業利回り(諸費用込み)</span><span class="v">${yieldInfo ? fmt(yieldInfo.totalYield, 2) + '%' : '-'}</span></div>
+        <div><span class="k">使用した諸費用</span><span class="v">${yieldInfo ? fmt(yieldInfo.costsUsed, 1) + ' 万円' : '-'}</span></div>
+      </div>
+    </div>
+
+    <div class="detail-section">
+      <h3>ローンシミュレーション(金利3%・10年・元金均等返済)</h3>
+      <div class="kv-grid">
+        <div><span class="k">物件価格</span><span class="v">${fmt(p.price, 0)} 万円</span></div>
+        <div><span class="k">自己資金割合</span><span class="v">${settings.selfFundRatio}%</span></div>
+        <div><span class="k">借入額</span><span class="v">${fmt(loanAmount, 1)} 万円</span></div>
+      </div>
+      ${yearlyRows.length ? `
+      <div class="year-table-wrap" style="margin-top:10px;">
+        <table class="data-table">
+          <thead><tr><th>年目</th><th>元金返済額</th><th>利息返済額</th><th>年間返済額</th><th>年末残高</th></tr></thead>
+          <tbody>
+            ${yearlyRows.map(y => `<tr><td>${y.year}年目</td><td>${fmt(y.principal, 1)}</td><td>${fmt(y.interest, 1)}</td><td>${fmt(y.payment, 1)}</td><td>${fmt(y.endBalance, 1)}</td></tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+      <div class="toggle-link" data-role="toggle-monthly">月次内訳(120回)を表示</div>
+      <div class="year-table-wrap" data-role="monthly-wrap" style="display:none; margin-top:10px;">
+        <table class="data-table">
+          <thead><tr><th>回数</th><th>元金部分</th><th>利息部分</th><th>返済額</th><th>返済額累計</th><th>ローン残高</th></tr></thead>
+          <tbody>
+            ${monthlyRows.map(r => `<tr><td>${r.month}</td><td>${fmt(r.principal, 2)}</td><td>${fmt(r.interest, 2)}</td><td>${fmt(r.payment, 2)}</td><td>${fmt(r.cumulative, 2)}</td><td>${fmt(r.balance, 2)}</td></tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+      ` : '<p class="hint">価格が未入力のためシミュレーションできません。</p>'}
+    </div>
+  `;
+}
+
+function toggleDetail(id) {
+  if (openDetailIds.has(id)) {
+    openDetailIds.delete(id);
+  } else {
+    openDetailIds.add(id);
+  }
+  render();
+  attachDetailHandlers();
+}
+
+function attachDetailHandlers() {
+  document.querySelectorAll('[data-role="toggle-monthly"]').forEach(el => {
+    el.addEventListener('click', () => {
+      const wrap = el.nextElementSibling;
+      const showing = wrap.style.display !== 'none';
+      wrap.style.display = showing ? 'none' : 'block';
+      el.textContent = showing ? '月次内訳(120回)を表示' : '月次内訳を閉じる';
+    });
+  });
+}
+
+function escapeHtml(str) {
+  return String(str).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function deleteProperty(id) {
+  if (!confirm('この物件を削除しますか？')) return;
+  properties = properties.filter(p => p.id !== id);
+  saveProperties(properties);
+  render();
+  attachDetailHandlers();
+}
+
+/* ---------- form ---------- */
+function openForm(id) {
+  editingId = id;
+  const overlay = document.getElementById('formOverlay');
+  const title = document.getElementById('formTitle');
+  document.getElementById('rawText').value = '';
+  clearCompRows();
+
+  if (id) {
+    const p = properties.find(x => x.id === id);
+    title.textContent = '物件を編集';
+    fillForm(p);
+  } else {
+    title.textContent = '物件を追加';
+    fillForm({});
+    addCompRow();
+  }
+  overlay.classList.remove('hidden');
+}
+
+function closeForm() {
+  document.getElementById('formOverlay').classList.add('hidden');
+  editingId = null;
+}
+
+function fillForm(p) {
+  document.getElementById('f_address').value = p.address || '';
+  document.getElementById('f_structure').value = p.structure || '';
+  document.getElementById('f_builtYear').value = p.builtYear || '';
+  document.getElementById('f_price').value = p.price || '';
+  document.getElementById('f_costs').value = p.costs || '';
+  document.getElementById('f_landArea').value = p.landArea || '';
+  document.getElementById('f_footprintArea').value = p.footprintArea || '';
+  document.getElementById('f_totalFloorArea').value = p.totalFloorArea || '';
+  document.getElementById('f_coverageDesignated').value = p.coverageDesignated || '';
+  document.getElementById('f_farDesignated').value = p.farDesignated || '';
+  document.getElementById('f_cityPlanning').value = p.cityPlanning || '';
+  document.getElementById('f_occupancy').value = p.occupancy || '';
+  document.getElementById('f_rentBasisArea').value = p.rentBasisArea || '';
+
+  clearCompRows();
+  (p.comps && p.comps.length ? p.comps : []).forEach(c => addCompRow(c));
+}
+
+function clearCompRows() {
+  document.getElementById('compTableBody').innerHTML = '';
+}
+
+function addCompRow(comp) {
+  const tbody = document.getElementById('compTableBody');
+  const tr = document.createElement('tr');
+  tr.innerHTML = `
+    <td><input type="text" class="comp-address" value="${comp ? escapeHtml(comp.address || '') : ''}"></td>
+    <td><input type="number" step="0.01" class="comp-area" value="${comp ? (comp.area || '') : ''}"></td>
+    <td><input type="number" step="0.01" class="comp-rent" value="${comp ? (comp.rent || '') : ''}"></td>
+    <td><button type="button" class="btn-danger comp-remove">×</button></td>
+  `;
+  tr.querySelector('.comp-remove').addEventListener('click', () => tr.remove());
+  tbody.appendChild(tr);
+}
+
+function readCompRows() {
+  return Array.from(document.querySelectorAll('#compTableBody tr')).map(tr => ({
+    address: tr.querySelector('.comp-address').value.trim(),
+    area: Number(tr.querySelector('.comp-area').value) || 0,
+    rent: Number(tr.querySelector('.comp-rent').value) || 0
+  })).filter(c => c.address || c.area || c.rent);
+}
+
+function saveForm() {
+  const data = {
+    id: editingId || ('p_' + Date.now()),
+    address: document.getElementById('f_address').value.trim(),
+    structure: document.getElementById('f_structure').value.trim(),
+    builtYear: document.getElementById('f_builtYear').value.trim(),
+    price: Number(document.getElementById('f_price').value) || 0,
+    costs: Number(document.getElementById('f_costs').value) || 0,
+    landArea: Number(document.getElementById('f_landArea').value) || 0,
+    footprintArea: Number(document.getElementById('f_footprintArea').value) || 0,
+    totalFloorArea: Number(document.getElementById('f_totalFloorArea').value) || 0,
+    coverageDesignated: Number(document.getElementById('f_coverageDesignated').value) || 0,
+    farDesignated: Number(document.getElementById('f_farDesignated').value) || 0,
+    cityPlanning: document.getElementById('f_cityPlanning').value.trim(),
+    occupancy: document.getElementById('f_occupancy').value.trim(),
+    rentBasisArea: Number(document.getElementById('f_rentBasisArea').value) || 0,
+    comps: readCompRows()
+  };
+
+  if (editingId) {
+    const idx = properties.findIndex(p => p.id === editingId);
+    properties[idx] = data;
+  } else {
+    properties.push(data);
+  }
+  saveProperties(properties);
+  closeForm();
+  render();
+  attachDetailHandlers();
+}
+
+/* ---------- init ---------- */
+document.getElementById('btnNewProperty').addEventListener('click', () => openForm(null));
+document.getElementById('btnCancel').addEventListener('click', closeForm);
+document.getElementById('btnSave').addEventListener('click', saveForm);
+document.getElementById('btnAddComp').addEventListener('click', () => addCompRow());
+function applyParsedText(rawText) {
+  const parsed = parseListingText(rawText);
+  document.getElementById('f_address').value = parsed.address || '';
+  document.getElementById('f_structure').value = parsed.structure || '';
+  document.getElementById('f_builtYear').value = parsed.builtYear || '';
+  document.getElementById('f_price').value = parsed.price || '';
+  document.getElementById('f_landArea').value = parsed.landArea || '';
+  document.getElementById('f_footprintArea').value = parsed.footprintArea || '';
+  document.getElementById('f_totalFloorArea').value = parsed.totalFloorArea || '';
+  document.getElementById('f_coverageDesignated').value = parsed.coverageDesignated || '';
+  document.getElementById('f_farDesignated').value = parsed.farDesignated || '';
+  document.getElementById('f_cityPlanning').value = parsed.cityPlanning || '';
+  document.getElementById('f_occupancy').value = parsed.occupancy || '';
+}
+
+document.getElementById('btnParse').addEventListener('click', () => {
+  applyParsedText(document.getElementById('rawText').value);
+});
+
+/* ---------- bookmarklet handoff ---------- */
+function handlePrefillFromHash() {
+  const hash = location.hash || '';
+  const marker = '#prefill=';
+  if (!hash.startsWith(marker)) return;
+
+  const encoded = hash.slice(marker.length);
+  history.replaceState(null, '', location.pathname + location.search);
+
+  let text = '';
+  try {
+    text = decodeURIComponent(encoded);
+  } catch (e) {
+    alert('ブックマークレットから受け取ったデータの読み込みに失敗しました。');
+    return;
+  }
+
+  openForm(null);
+  document.getElementById('rawText').value = text;
+  applyParsedText(text);
+}
+document.getElementById('selfFundRatio').addEventListener('change', (e) => {
+  let v = Number(e.target.value);
+  if (Number.isNaN(v) || v < 0) v = 0;
+  if (v > 100) v = 100;
+  settings.selfFundRatio = v;
+  saveSettings(settings);
+  render();
+  attachDetailHandlers();
+});
+
+render();
+attachDetailHandlers();
+handlePrefillFromHash();

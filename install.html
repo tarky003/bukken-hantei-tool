@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ブックマークレットの設定 - 物件判定ツール</title>
+<link rel="stylesheet" href="style.css">
+<style>
+  .install-main { max-width: 720px; margin: 0 auto; padding: 30px 16px 80px; line-height: 1.7; }
+  .install-main h1 { font-size: 20px; }
+  .install-main h2 { font-size: 16px; margin-top: 34px; border-bottom: 2px solid var(--color-border); padding-bottom: 6px; }
+  .install-main ol, .install-main ul { padding-left: 22px; }
+  .bookmarklet-btn {
+    display: inline-block;
+    margin: 14px 0;
+    padding: 12px 22px;
+    background: var(--color-primary);
+    color: #fff;
+    font-weight: 700;
+    border-radius: 8px;
+    text-decoration: none;
+    cursor: grab;
+  }
+  .bookmarklet-btn:hover { background: var(--color-primary-dark); }
+  .code-box {
+    width: 100%;
+    box-sizing: border-box;
+    font-family: monospace;
+    font-size: 12px;
+    padding: 10px;
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+    background: #fafbfc;
+  }
+  .note {
+    background: #fffbeb;
+    border: 1px solid #fde68a;
+    border-radius: 8px;
+    padding: 12px 16px;
+    font-size: 13px;
+    color: #92400e;
+  }
+  .site-list { font-size: 13px; color: var(--color-muted); }
+</style>
+</head>
+<body>
+
+<header class="app-header">
+  <h1>物件情報取り込みブックマークレットの設定</h1>
+</header>
+
+<main class="install-main">
+
+  <p>物件ポータルサイトの詳細ページを開いた状態でボタンを押すだけで、そのページの情報を「物件判定ツール」に自動で取り込めるようにする機能です。一度だけ設定すれば、あとは物件を見るたびにボタンを押すだけで使えます。</p>
+
+  <div class="note">
+    ご自身が今見ているページの内容をその場で読み取るだけの仕組みです。サイトを巡回・大量取得するものではありません。
+  </div>
+
+  <h2>手順1：ブックマークバーを表示する</h2>
+  <ul>
+    <li>Mac (Chrome/Edge)：<code>Command + Shift + B</code></li>
+    <li>Windows (Chrome/Edge)：<code>Ctrl + Shift + B</code></li>
+  </ul>
+
+  <h2>手順2：ボタンをブックマークバーにドラッグする</h2>
+  <p>下のボタンを、表示したブックマークバーまでドラッグ＆ドロップしてください。</p>
+  <p><a id="bookmarkletLink" class="bookmarklet-btn" href="#" onclick="return false;">📥 物件情報を取り込む</a></p>
+  <p class="hint">※ クリックしても動作しません。必ず「ドラッグしてブックマークバーに置く」操作をしてください。</p>
+
+  <h2>ドラッグできない場合（手動で登録）</h2>
+  <ol>
+    <li>ブラウザのブックマーク管理画面で「新しいブックマークを追加」を選ぶ</li>
+    <li>名前欄に「物件情報を取り込む」と入力</li>
+    <li>URL（場所）欄に、下のコードを全部コピーして貼り付けて保存</li>
+  </ol>
+  <textarea id="bookmarkletCode" class="code-box" rows="6" readonly></textarea>
+  <p><button id="btnCopyCode" class="btn-secondary">コードをコピーする</button></p>
+
+  <h2>使い方</h2>
+  <ol>
+    <li>不動産ポータルサイトで、確認したい物件の詳細ページを開く</li>
+    <li>ブックマークバーの「物件情報を取り込む」をクリックする</li>
+    <li>物件判定ツールが新しいタブで開き、入力フォームに内容が自動で入る</li>
+    <li>内容に誤りがないか確認・修正してから保存する</li>
+  </ol>
+  <p class="site-list">主要な不動産ポータルサイト（SUUMO・athome・LIFULL HOME'S など）の物件概要表・物件詳細リストに対応した汎用的な抽出方式です。サイトによって項目が取得できない場合は、手動で修正してください。</p>
+
+</main>
+
+<script>
+function buildBookmarkletSource(toolUrl) {
+  function extractor() {
+    try {
+      var pairs = [];
+      var seen = {};
+      function addPair(label, value) {
+        label = (label || '').replace(/\s+/g, ' ').trim();
+        value = (value || '').replace(/\s+/g, ' ').trim();
+        if (!label || !value) return;
+        var key = label + '|' + value;
+        if (seen[key]) return;
+        seen[key] = true;
+        pairs.push(label + '：' + value);
+      }
+      var trs = document.querySelectorAll('table tr');
+      for (var i = 0; i < trs.length; i++) {
+        var cells = trs[i].querySelectorAll('th,td');
+        if (cells.length >= 2) {
+          var values = [];
+          for (var j = 1; j < cells.length; j++) values.push(cells[j].innerText);
+          addPair(cells[0].innerText, values.join(' '));
+        }
+      }
+      var dls = document.querySelectorAll('dl');
+      for (var d = 0; d < dls.length; d++) {
+        var dts = dls[d].querySelectorAll('dt');
+        var dds = dls[d].querySelectorAll('dd');
+        for (var k = 0; k < dts.length; k++) {
+          if (dds[k]) addPair(dts[k].innerText, dds[k].innerText);
+        }
+      }
+      var text = '取得元URL：' + location.href + '\n' + pairs.join('\n');
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).catch(function () {});
+      }
+      var url = '__TOOL_URL__#prefill=' + encodeURIComponent(text);
+      window.open(url, '_blank');
+    } catch (e) {
+      alert('物件情報の取得に失敗しました: ' + (e && e.message));
+    }
+  }
+  var src = extractor.toString().replace('__TOOL_URL__', toolUrl);
+  return 'javascript:(' + src + ')();';
+}
+
+(function () {
+  var toolUrl = location.href.replace(/install\.html.*$/, 'index.html');
+  var code = buildBookmarkletSource(toolUrl);
+  document.getElementById('bookmarkletLink').setAttribute('href', code);
+  document.getElementById('bookmarkletCode').value = code;
+  document.getElementById('btnCopyCode').addEventListener('click', function () {
+    navigator.clipboard.writeText(code).then(function () {
+      this.textContent = 'コピーしました';
+      setTimeout(() => { this.textContent = 'コードをコピーする'; }, 1500);
+    }.bind(this));
+  });
+})();
+</script>
+
+</body>
+</html>
