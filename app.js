@@ -73,6 +73,15 @@ function parseListingText(text) {
   result.cityPlanning = grab([/都市計画[:：]?\s*([^\n,、]+)/]);
   result.occupancy = grab([/(?:現況|入居状況)[:：]?\s*([^\n,、]+)/]);
 
+  // 物件種別(建て方): 統計相場の単価選択に使用
+  if (/一戸建|１戸建|1戸建|戸建/.test(text)) {
+    result.buildingType = 'house';
+  } else if (/マンション|アパート|共同住宅|一棟|１棟|1棟/.test(text)) {
+    result.buildingType = 'apartment';
+  } else {
+    result.buildingType = '';
+  }
+
   return result;
 }
 
@@ -115,19 +124,100 @@ function checkRatios(p) {
   return out;
 }
 
+/* ---------- statistical rent lookup (住宅・土地統計調査) ---------- */
+function findArea(address) {
+  if (!address || typeof RENT_DB === 'undefined') return null;
+
+  // 都道府県を特定(コード末尾000がその都道府県の行)
+  let prefCode = null;
+  for (const code in RENT_DB) {
+    if (code.endsWith('000') && address.includes(RENT_DB[code].n)) {
+      prefCode = code.slice(0, 2);
+      break;
+    }
+  }
+
+  // 市区町村を「住所に含まれる最長の地域名」で特定(都道府県が分かればその中だけ探す)
+  let best = null;
+  for (const code in RENT_DB) {
+    if (code.endsWith('000')) continue;
+    if (prefCode && !code.startsWith(prefCode)) continue;
+    const name = RENT_DB[code].n;
+    if (address.includes(name)) {
+      if (!best || name.length > best.name.length) best = { code, name };
+    }
+  }
+  return {
+    city: best ? RENT_DB[best.code] : null,
+    pref: prefCode ? RENT_DB[prefCode + '000'] : null
+  };
+}
+
+function isWooden(structure) {
+  const s = structure || '';
+  if (/木造/.test(s)) return true;
+  if (/鉄骨|鉄筋|RC|SRC|コンクリート|ブロック/.test(s)) return false;
+  return null; // 不明
+}
+
+// 統計相場の㎡単価を選択。優先順: 市区町村の建て方×構造 → 都道府県の同区分 → 市区町村の民営借家 → 総数 → 都道府県の民営借家 → 総数
+function statUnitRent(p) {
+  const area = findArea(p.address);
+  if (!area || (!area.city && !area.pref)) return null;
+
+  const wood = isWooden(p.structure);
+  let detailKey = null;
+  let typeLabel = '';
+  if (p.buildingType === 'house') {
+    detailKey = wood === false ? 'hn' : 'hw';
+    typeLabel = wood === false ? '一戸建(非木造)' : '一戸建(木造)';
+  } else if (p.buildingType === 'apartment') {
+    detailKey = wood === true ? 'aw' : 'an';
+    typeLabel = wood === true ? '共同住宅(木造)' : '共同住宅(非木造)';
+  }
+
+  const candidates = [];
+  if (detailKey) {
+    if (area.city) candidates.push({ v: area.city[detailKey], label: `${area.city.n}・${typeLabel}` });
+    if (area.pref) candidates.push({ v: area.pref[detailKey], label: `${area.pref.n}平均・${typeLabel}` });
+  }
+  if (area.city) {
+    candidates.push({ v: area.city.m, label: `${area.city.n}・民営借家平均` });
+    candidates.push({ v: area.city.t, label: `${area.city.n}・借家全体平均` });
+  }
+  if (area.pref) {
+    candidates.push({ v: area.pref.m, label: `${area.pref.n}平均・民営借家` });
+    candidates.push({ v: area.pref.t, label: `${area.pref.n}平均・借家全体` });
+  }
+  for (const c of candidates) {
+    if (c.v > 0) return { yenPerM2: c.v, basisLabel: c.label };
+  }
+  return null;
+}
+
 /* ---------- rent estimation ---------- */
+// 手入力の類似物件があればそれを優先し、無ければ統計相場から自動算出する
 function estimateRent(p) {
-  const comps = (p.comps || []).filter(c => c.area > 0 && c.rent > 0);
-  if (comps.length === 0) return null;
-
-  const unitRents = comps.map(c => c.rent / c.area); // 万円/月/m2
-  const avgUnitRent = unitRents.reduce((a, b) => a + b, 0) / unitRents.length;
-
   const basisArea = p.rentBasisArea > 0 ? p.rentBasisArea : (p.totalFloorArea || 0);
-  if (!basisArea) return { avgUnitRent, basisArea: 0, monthlyRent: null, annualRent: null };
 
-  const monthlyRent = avgUnitRent * basisArea;
-  return { avgUnitRent, basisArea, monthlyRent, annualRent: monthlyRent * 12 };
+  const comps = (p.comps || []).filter(c => c.area > 0 && c.rent > 0);
+  if (comps.length > 0) {
+    const unitRents = comps.map(c => c.rent / c.area); // 万円/月/m2
+    const avgUnitRent = unitRents.reduce((a, b) => a + b, 0) / unitRents.length;
+    if (!basisArea) return { source: 'comps', avgUnitRent, basisArea: 0, monthlyRent: null, annualRent: null };
+    const monthlyRent = avgUnitRent * basisArea;
+    return { source: 'comps', avgUnitRent, basisArea, monthlyRent, annualRent: monthlyRent * 12 };
+  }
+
+  const stat = statUnitRent(p);
+  if (stat) {
+    const avgUnitRent = stat.yenPerM2 / 10000; // 円→万円
+    if (!basisArea) return { source: 'stat', statBasis: stat.basisLabel, yenPerM2: stat.yenPerM2, avgUnitRent, basisArea: 0, monthlyRent: null, annualRent: null };
+    const monthlyRent = avgUnitRent * basisArea;
+    return { source: 'stat', statBasis: stat.basisLabel, yenPerM2: stat.yenPerM2, avgUnitRent, basisArea, monthlyRent, annualRent: monthlyRent * 12 };
+  }
+
+  return null;
 }
 
 /* ---------- yield ---------- */
@@ -285,18 +375,30 @@ function renderDetail(p, reasons, ratios, rentInfo, yieldInfo) {
 
     <div class="detail-section">
       <h3>近隣家賃相場・想定家賃</h3>
+      ${rentInfo && rentInfo.source === 'stat' ? `
+      <div class="kv-grid">
+        <div><span class="k">相場の根拠</span><span class="v">統計相場(${escapeHtml(rentInfo.statBasis)})</span></div>
+        <div><span class="k">家賃㎡単価</span><span class="v">${fmt(rentInfo.yenPerM2)} 円/m²・月</span></div>
+        <div><span class="k">算出基準面積</span><span class="v">${rentInfo.basisArea ? fmt(rentInfo.basisArea, 1) + ' m²' : '-(延床面積が未入力)'}</span></div>
+        <div><span class="k">想定月額家賃</span><span class="v">${rentInfo.monthlyRent ? fmt(rentInfo.monthlyRent, 1) + ' 万円' : '-'}</span></div>
+        <div><span class="k">想定年間家賃</span><span class="v">${rentInfo.annualRent ? fmt(rentInfo.annualRent, 1) + ' 万円' : '-'}</span></div>
+      </div>
+      <p class="hint">出典: 総務省「令和5年住宅・土地統計調査」の市区町村別平均家賃(住所から自動判定)。市区町村平均のため駅距離・築年数・設備は反映されません。精度を上げたい場合は編集画面で近隣の類似賃貸物件を入力すると、そちらが優先されます。</p>
+      ` : `
       <table class="comp-table" data-role="comp-table-view">
         <thead><tr><th>住所/物件名</th><th>面積(m²)</th><th>家賃(万円/月)</th><th>㎡単価(万円)</th></tr></thead>
         <tbody>
-          ${(p.comps || []).map(c => `<tr><td style="text-align:left">${escapeHtml(c.address || '')}</td><td>${fmt(c.area, 1)}</td><td>${fmt(c.rent, 2)}</td><td>${c.area > 0 ? fmt(c.rent / c.area, 4) : '-'}</td></tr>`).join('') || '<tr><td colspan="4" style="text-align:center;color:#999;">類似物件が未登録です(編集から追加してください)</td></tr>'}
+          ${(p.comps || []).map(c => `<tr><td style="text-align:left">${escapeHtml(c.address || '')}</td><td>${fmt(c.area, 1)}</td><td>${fmt(c.rent, 2)}</td><td>${c.area > 0 ? fmt(c.rent / c.area, 4) : '-'}</td></tr>`).join('') || '<tr><td colspan="4" style="text-align:center;color:#999;">類似物件が未登録で、住所から統計相場も判定できませんでした(住所に都道府県・市区町村名を含めてください)</td></tr>'}
         </tbody>
       </table>
       <div class="kv-grid" style="margin-top:10px;">
+        <div><span class="k">相場の根拠</span><span class="v">${rentInfo ? '手入力の類似物件 ' + (p.comps || []).filter(c => c.area > 0 && c.rent > 0).length + '件' : '-'}</span></div>
         <div><span class="k">平均㎡単価</span><span class="v">${rentInfo && rentInfo.avgUnitRent ? fmt(rentInfo.avgUnitRent, 4) + ' 万円/m²' : '-'}</span></div>
         <div><span class="k">算出基準面積</span><span class="v">${rentInfo ? fmt(rentInfo.basisArea, 1) + ' m²' : '-'}</span></div>
         <div><span class="k">想定月額家賃</span><span class="v">${rentInfo && rentInfo.monthlyRent ? fmt(rentInfo.monthlyRent, 1) + ' 万円' : '-'}</span></div>
         <div><span class="k">想定年間家賃</span><span class="v">${rentInfo && rentInfo.annualRent ? fmt(rentInfo.annualRent, 1) + ' 万円' : '-'}</span></div>
       </div>
+      `}
     </div>
 
     <div class="detail-section">
@@ -398,6 +500,7 @@ function closeForm() {
 
 function fillForm(p) {
   document.getElementById('f_address').value = p.address || '';
+  document.getElementById('f_buildingType').value = p.buildingType || '';
   document.getElementById('f_structure').value = p.structure || '';
   document.getElementById('f_builtYear').value = p.builtYear || '';
   document.getElementById('f_price').value = p.price || '';
@@ -444,6 +547,7 @@ function saveForm() {
   const data = {
     id: editingId || ('p_' + Date.now()),
     address: document.getElementById('f_address').value.trim(),
+    buildingType: document.getElementById('f_buildingType').value,
     structure: document.getElementById('f_structure').value.trim(),
     builtYear: document.getElementById('f_builtYear').value.trim(),
     price: Number(document.getElementById('f_price').value) || 0,
@@ -479,6 +583,7 @@ document.getElementById('btnAddComp').addEventListener('click', () => addCompRow
 function applyParsedText(rawText) {
   const parsed = parseListingText(rawText);
   document.getElementById('f_address').value = parsed.address || '';
+  document.getElementById('f_buildingType').value = parsed.buildingType || '';
   document.getElementById('f_structure').value = parsed.structure || '';
   document.getElementById('f_builtYear').value = parsed.builtYear || '';
   document.getElementById('f_price').value = parsed.price || '';

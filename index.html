@@ -41,6 +41,13 @@
 
     <div class="form-grid">
       <label>物件名/住所<input type="text" id="f_address"></label>
+      <label>物件種別(統計相場の判定に使用)
+        <select id="f_buildingType">
+          <option value="">不明・その他</option>
+          <option value="house">一戸建</option>
+          <option value="apartment">マンション・アパート(一棟含む)</option>
+        </select>
+      </label>
       <label>構造<input type="text" id="f_structure"></label>
       <label>築年月<input type="text" id="f_builtYear"></label>
       <label>価格(万円)<input type="number" id="f_price" step="1"></label>
@@ -71,6 +78,7 @@
   </div>
 </div>
 
+<script src="rent-data.js"></script>
 <script src="app.js" defer></script>
 </body>
 </html>

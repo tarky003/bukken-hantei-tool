@@ -296,13 +296,15 @@ table.comp-table td:first-child input { text-align: left; }
   margin-bottom: 18px;
 }
 .form-grid label { font-size: 12px; font-weight: 600; color: var(--color-muted); display: flex; flex-direction: column; gap: 4px; }
-.form-grid input {
+.form-grid input,
+.form-grid select {
   border: 1px solid var(--color-border);
   border-radius: 6px;
   padding: 7px 8px;
   font-size: 13px;
   font-weight: 400;
   color: var(--color-text);
+  background: #fff;
 }
 
 .form-actions {
