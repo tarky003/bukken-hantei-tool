@@ -58,6 +58,10 @@ function parseListingText(text) {
   const totalFloorStr = grab([/(?:延床面積|延べ床面積)[:：]?\s*([\d,，.]+)\s*(?:m²|m2|㎡)/, /建物面積[:：]?\s*([\d,，.]+)\s*(?:m²|m2|㎡)/]);
   result.totalFloorArea = totalFloorStr ? Number(totalFloorStr.replace(/[,，]/g, '')) : '';
 
+  // 地上階数(建築面積が未記載のとき延床面積÷階数で推定するために使用)
+  const floorsStr = grab([/(?:地上)?\s*([0-9０-９]+)\s*階建/]);
+  result.floors = floorsStr ? Number(floorsStr.replace(/[０-９]/g, c => '０１２３４５６７８９'.indexOf(c))) : '';
+
   // combined 建ぺい率／容積率 pattern
   const combined = text.match(/建(?:ぺい|蔽)率\s*[／\/]\s*容積率[:：]?\s*([\d.]+)\s*%\s*[／\/]\s*([\d.]+)\s*%/);
   if (combined) {
@@ -105,12 +109,22 @@ function getExclusionReasons(p) {
 function checkRatios(p) {
   const out = { coverage: null, far: null };
 
-  if (p.landArea > 0 && p.footprintArea > 0 && p.coverageDesignated > 0) {
-    const actual = (p.footprintArea / p.landArea) * 100;
+  // 建築面積が未記載の場合は延床面積÷階数で推定(各階同面積と仮定した概算)
+  let footprint = p.footprintArea > 0 ? p.footprintArea : 0;
+  let footprintEstimated = false;
+  if (!footprint && p.totalFloorArea > 0 && p.floors > 0) {
+    footprint = p.totalFloorArea / p.floors;
+    footprintEstimated = true;
+  }
+
+  if (p.landArea > 0 && footprint > 0 && p.coverageDesignated > 0) {
+    const actual = (footprint / p.landArea) * 100;
     out.coverage = {
       actual,
       designated: p.coverageDesignated,
-      ok: actual <= p.coverageDesignated + 0.01
+      ok: actual <= p.coverageDesignated + 0.01,
+      estimated: footprintEstimated,
+      footprintUsed: footprint
     };
   }
   if (p.landArea > 0 && p.totalFloorArea > 0 && p.farDesignated > 0) {
@@ -349,8 +363,11 @@ function renderDetail(p, reasons, ratios, rentInfo, yieldInfo) {
 
   const ratioRow = (label, r) => {
     if (!r) return `<div><span class="k">${label}</span><span class="v">判定不可(面積または指定値の未入力)</span></div>`;
-    const status = r.ok ? '<span class="badge badge-ok">適正</span>' : '<span class="badge badge-ng">超過</span>';
-    return `<div><span class="k">${label}</span><span class="v">実際 ${fmt(r.actual, 1)}% / 指定 ${fmt(r.designated, 1)}% ${status}</span></div>`;
+    const status = r.ok
+      ? `<span class="badge badge-ok">適正${r.estimated ? '(推定)' : ''}</span>`
+      : `<span class="badge badge-ng">超過${r.estimated ? '(推定)' : ''}</span>`;
+    const est = r.estimated ? `<br><span class="hint">建築面積の記載がないため延床面積÷${fmt((p.floors || 0))}階=${fmt(r.footprintUsed, 1)}m²と推定した概算</span>` : '';
+    return `<div><span class="k">${label}</span><span class="v">実際 ${fmt(r.actual, 1)}% / 指定 ${fmt(r.designated, 1)}% ${status}${est}</span></div>`;
   };
 
   return `
@@ -507,6 +524,7 @@ function fillForm(p) {
   document.getElementById('f_costs').value = p.costs || '';
   document.getElementById('f_landArea').value = p.landArea || '';
   document.getElementById('f_footprintArea').value = p.footprintArea || '';
+  document.getElementById('f_floors').value = p.floors || '';
   document.getElementById('f_totalFloorArea').value = p.totalFloorArea || '';
   document.getElementById('f_coverageDesignated').value = p.coverageDesignated || '';
   document.getElementById('f_farDesignated').value = p.farDesignated || '';
@@ -554,6 +572,7 @@ function saveForm() {
     costs: Number(document.getElementById('f_costs').value) || 0,
     landArea: Number(document.getElementById('f_landArea').value) || 0,
     footprintArea: Number(document.getElementById('f_footprintArea').value) || 0,
+    floors: Number(document.getElementById('f_floors').value) || 0,
     totalFloorArea: Number(document.getElementById('f_totalFloorArea').value) || 0,
     coverageDesignated: Number(document.getElementById('f_coverageDesignated').value) || 0,
     farDesignated: Number(document.getElementById('f_farDesignated').value) || 0,
@@ -589,6 +608,7 @@ function applyParsedText(rawText) {
   document.getElementById('f_price').value = parsed.price || '';
   document.getElementById('f_landArea').value = parsed.landArea || '';
   document.getElementById('f_footprintArea').value = parsed.footprintArea || '';
+  document.getElementById('f_floors').value = parsed.floors || '';
   document.getElementById('f_totalFloorArea').value = parsed.totalFloorArea || '';
   document.getElementById('f_coverageDesignated').value = parsed.coverageDesignated || '';
   document.getElementById('f_farDesignated').value = parsed.farDesignated || '';

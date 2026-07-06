@@ -53,7 +53,8 @@
       <label>価格(万円)<input type="number" id="f_price" step="1"></label>
       <label>諸費用(万円・任意/空欄なら価格の7%で概算)<input type="number" id="f_costs" step="1"></label>
       <label>土地面積(m²)<input type="number" id="f_landArea" step="0.01"></label>
-      <label>建築面積(建蔽率算定用・m²)<input type="number" id="f_footprintArea" step="0.01"></label>
+      <label>建築面積(建蔽率算定用・m²/未記載なら空欄可)<input type="number" id="f_footprintArea" step="0.01"></label>
+      <label>地上階数(建築面積が空欄のとき延床÷階数で推定)<input type="number" id="f_floors" step="1" min="1"></label>
       <label>延床面積(容積率算定用・m²)<input type="number" id="f_totalFloorArea" step="0.01"></label>
       <label>建蔽率(指定・%)<input type="number" id="f_coverageDesignated" step="0.1"></label>
       <label>容積率(指定・%)<input type="number" id="f_farDesignated" step="0.1"></label>
