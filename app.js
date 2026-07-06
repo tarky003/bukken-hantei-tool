@@ -59,8 +59,20 @@ function parseListingText(text) {
   result.totalFloorArea = totalFloorStr ? Number(totalFloorStr.replace(/[,，]/g, '')) : '';
 
   // 地上階数(建築面積が未記載のとき延床面積÷階数で推定するために使用)
-  const floorsStr = grab([/(?:地上)?\s*([0-9０-９]+)\s*階建/]);
-  result.floors = floorsStr ? Number(floorsStr.replace(/[０-９]/g, c => '０１２３４５６７８９'.indexOf(c))) : '';
+  const toHalf = (s) => s.replace(/[０-９]/g, c => '０１２３４５６７８９'.indexOf(c));
+  const floorsStr = grab([
+    /([0-9０-９]+)\s*階\s*建/,
+    /地上\s*([0-9０-９]+)\s*階/,
+    /階建[^0-9０-９\n]{0,10}([0-9０-９]+)\s*階/,
+    /階数[:：]?\s*([0-9０-９]+)/
+  ]);
+  if (floorsStr) {
+    result.floors = Number(toHalf(floorsStr));
+  } else if (/平屋/.test(text)) {
+    result.floors = 1;
+  } else {
+    result.floors = '';
+  }
 
   // combined 建ぺい率／容積率 pattern
   const combined = text.match(/建(?:ぺい|蔽)率\s*[／\/]\s*容積率[:：]?\s*([\d.]+)\s*%\s*[／\/]\s*([\d.]+)\s*%/);
@@ -360,7 +372,18 @@ function renderDetail(p, reasons, ratios, rentInfo, yieldInfo) {
   const yearlyRows = monthlyRows.length ? buildYearlySummary(monthlyRows) : [];
 
   const ratioRow = (label, r) => {
-    if (!r) return `<div><span class="k">${label}</span><span class="v">判定不可(面積または指定値の未入力)</span></div>`;
+    if (!r) {
+      const missing = [];
+      if (!(p.landArea > 0)) missing.push('土地面積');
+      if (label === '建蔽率') {
+        if (!(p.coverageDesignated > 0)) missing.push('建蔽率(指定)');
+        if (!(p.footprintArea > 0) && !(p.totalFloorArea > 0 && p.floors > 0)) missing.push('建築面積(または延床面積＋地上階数)');
+      } else {
+        if (!(p.farDesignated > 0)) missing.push('容積率(指定)');
+        if (!(p.totalFloorArea > 0)) missing.push('延床面積');
+      }
+      return `<div><span class="k">${label}</span><span class="v">判定不可<br><span class="hint">「編集」で ${missing.join('・')} を入力すると判定できます</span></span></div>`;
+    }
     const status = r.ok
       ? `<span class="badge badge-ok">適正${r.estimated ? '(推定)' : ''}</span>`
       : `<span class="badge badge-ng">超過${r.estimated ? '(推定)' : ''}</span>`;
