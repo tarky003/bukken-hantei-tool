@@ -154,6 +154,14 @@ function checkRatios(p) {
       ok: actual <= p.farDesignated + 0.01
     };
   }
+
+  // 建て替え・新築時に建てられる最大規模(参考)
+  if (p.landArea > 0 && p.coverageDesignated > 0) {
+    out.maxFootprint = p.landArea * (p.coverageDesignated / 100);
+  }
+  if (p.landArea > 0 && p.farDesignated > 0) {
+    out.maxTotalFloor = p.landArea * (p.farDesignated / 100);
+  }
   return out;
 }
 
@@ -418,6 +426,13 @@ function renderDetail(p, reasons, ratios, rentInfo, yieldInfo) {
         ${ratioRow('建蔽率', ratios.coverage)}
         ${ratioRow('容積率', ratios.far)}
       </div>
+      ${(ratios.maxFootprint || ratios.maxTotalFloor) ? `
+      <div class="kv-grid" style="margin-top:10px;">
+        <div><span class="k">建築可能な最大建築面積</span><span class="v">${ratios.maxFootprint ? fmt(ratios.maxFootprint, 1) + ' m²' : '-'}</span></div>
+        <div><span class="k">建築可能な最大延床面積</span><span class="v">${ratios.maxTotalFloor ? fmt(ratios.maxTotalFloor, 1) + ' m²' : '-'}</span></div>
+      </div>
+      <p class="hint">土地面積×建蔽率／容積率で算出した、建て替え・新築時に建てられる規模の目安(参考値)。角地緩和・前面道路幅員による容積率制限などは考慮していません。</p>
+      ` : ''}
     </div>
 
     <div class="detail-section">
