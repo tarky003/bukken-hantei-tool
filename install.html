@@ -89,9 +89,13 @@
 </main>
 
 <script>
-function buildBookmarkletSource(toolUrl) {
+function buildBookmarkletSource(toolUrl, toolOrigin) {
   function extractor() {
     try {
+      if (location.href.indexOf('__TOOL_ORIGIN__') === 0) {
+        alert('このページは物件判定ツール自身のページです。物件ポータルサイトの詳細ページで実行してください。');
+        return;
+      }
       var pairs = [];
       var seen = {};
       function addPair(label, value) {
@@ -120,6 +124,10 @@ function buildBookmarkletSource(toolUrl) {
           if (dds[k]) addPair(dts[k].innerText, dds[k].innerText);
         }
       }
+      if (pairs.length === 0) {
+        alert('このページから物件情報らしき項目を検出できませんでした。物件の詳細ページ(価格・面積などの表がある画面)で実行してください。');
+        return;
+      }
       var text = '取得元URL：' + location.href + '\n' + pairs.join('\n');
       if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(text).catch(function () {});
@@ -130,13 +138,14 @@ function buildBookmarkletSource(toolUrl) {
       alert('物件情報の取得に失敗しました: ' + (e && e.message));
     }
   }
-  var src = extractor.toString().replace('__TOOL_URL__', toolUrl);
+  var src = extractor.toString().replace('__TOOL_ORIGIN__', toolOrigin).replace('__TOOL_URL__', toolUrl);
   return 'javascript:(' + src + ')();';
 }
 
 (function () {
   var toolUrl = location.href.replace(/install\.html.*$/, 'index.html');
-  var code = buildBookmarkletSource(toolUrl);
+  var toolOrigin = location.origin + location.pathname.replace(/install\.html.*$/, '');
+  var code = buildBookmarkletSource(toolUrl, toolOrigin);
   document.getElementById('bookmarkletLink').setAttribute('href', code);
   document.getElementById('bookmarkletCode').value = code;
   document.getElementById('btnCopyCode').addEventListener('click', function () {
