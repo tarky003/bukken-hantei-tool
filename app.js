@@ -30,6 +30,36 @@ let settings = loadSettings();
 let editingId = null; // null = new property
 let openDetailIds = new Set();
 let footprintFieldEstimated = false; // 建築面積欄が自動推定値かどうか(手入力で解除)
+let coverageFieldEstimated = false;  // 建蔽率欄が用途地域からの推定値かどうか
+let farFieldEstimated = false;       // 容積率欄が用途地域からの推定値かどうか
+let useZoneParsed = '';              // 直近に解析した用途地域名
+
+/* ---------- 用途地域→標準的な建蔽率・容積率 ---------- */
+// 各用途地域で最も一般的に指定される建蔽率(%)・容積率(%)。
+// 実際は市区町村が地区ごとに指定するため、あくまで代表値(推定)。
+// 判定順は具体的なものから先に(「準工業」を「工業」より前、「近隣商業」を「商業」より前 等)。
+const USE_ZONE_TABLE = [
+  { re: /第?[一１]種低層住居専用|[１1]種低層|１低|1低/, cov: 50, far: 100, label: '第一種低層住居専用地域' },
+  { re: /第?[二２]種低層住居専用|[２2]種低層|２低|2低/, cov: 50, far: 100, label: '第二種低層住居専用地域' },
+  { re: /田園住居/, cov: 50, far: 100, label: '田園住居地域' },
+  { re: /第?[一１]種中高層住居専用|[１1]種中高|１中高|1中高/, cov: 60, far: 200, label: '第一種中高層住居専用地域' },
+  { re: /第?[二２]種中高層住居専用|[２2]種中高|２中高|2中高/, cov: 60, far: 200, label: '第二種中高層住居専用地域' },
+  { re: /第?[一１]種住居|[１1]種住居|１種住|1種住/, cov: 60, far: 200, label: '第一種住居地域' },
+  { re: /第?[二２]種住居|[２2]種住居|２種住|2種住/, cov: 60, far: 200, label: '第二種住居地域' },
+  { re: /準住居/, cov: 60, far: 200, label: '準住居地域' },
+  { re: /近隣商業/, cov: 80, far: 200, label: '近隣商業地域' },
+  { re: /商業地域|商業/, cov: 80, far: 400, label: '商業地域' },
+  { re: /準工業/, cov: 60, far: 200, label: '準工業地域' },
+  { re: /工業専用/, cov: 60, far: 200, label: '工業専用地域' },
+  { re: /工業地域|工業/, cov: 60, far: 200, label: '工業地域' }
+];
+
+function lookupUseZone(text) {
+  for (const z of USE_ZONE_TABLE) {
+    if (z.re.test(text)) return z;
+  }
+  return null;
+}
 
 /* ---------- parsing ---------- */
 function parseListingText(text) {
@@ -95,6 +125,20 @@ function parseListingText(text) {
     result.farDesignated = far ? Number(far) : '';
   }
 
+  // 用途地域を読み取り、建蔽率・容積率が未記載なら用途地域の標準値で推定
+  const zone = lookupUseZone(text);
+  if (zone) {
+    result.useZone = zone.label;
+    if (!(result.coverageDesignated > 0)) {
+      result.coverageDesignated = zone.cov;
+      result.coverageEstimated = true;
+    }
+    if (!(result.farDesignated > 0)) {
+      result.farDesignated = zone.far;
+      result.farEstimated = true;
+    }
+  }
+
   result.cityPlanning = grab([/都市計画[:：]?\s*([^\n,、]+)/]);
   result.occupancy = grab([/(?:現況|入居状況)[:：]?\s*([^\n,、]+)/]);
 
@@ -143,7 +187,8 @@ function checkRatios(p) {
       designated: p.coverageDesignated,
       ok: actual <= p.coverageDesignated + 0.01,
       estimated: footprintEstimated,
-      footprintUsed: footprint
+      footprintUsed: footprint,
+      designatedEstimated: !!p.coverageEstimated
     };
   }
   if (p.landArea > 0 && p.totalFloorArea > 0 && p.farDesignated > 0) {
@@ -151,7 +196,8 @@ function checkRatios(p) {
     out.far = {
       actual,
       designated: p.farDesignated,
-      ok: actual <= p.farDesignated + 0.01
+      ok: actual <= p.farDesignated + 0.01,
+      designatedEstimated: !!p.farEstimated
     };
   }
 
@@ -401,11 +447,16 @@ function renderDetail(p, reasons, ratios, rentInfo, yieldInfo) {
       }
       return `<div><span class="k">${label}</span><span class="v">判定不可<br><span class="hint">「編集」で ${missing.join('・')} を入力すると判定できます</span></span></div>`;
     }
+    const anyEstimated = r.estimated || r.designatedEstimated;
     const status = r.ok
-      ? `<span class="badge badge-ok">適正${r.estimated ? '(推定)' : ''}</span>`
-      : `<span class="badge badge-ng">超過${r.estimated ? '(推定)' : ''}</span>`;
-    const est = r.estimated ? `<br><span class="hint">建築面積の記載がないため延床面積÷${fmt((p.floors || 0))}階=${fmt(r.footprintUsed, 1)}m²と推定した概算</span>` : '';
-    return `<div><span class="k">${label}</span><span class="v">実際 ${fmt(r.actual, 1)}% / 指定 ${fmt(r.designated, 1)}% ${status}${est}</span></div>`;
+      ? `<span class="badge badge-ok">適正${anyEstimated ? '(推定)' : ''}</span>`
+      : `<span class="badge badge-ng">超過${anyEstimated ? '(推定)' : ''}</span>`;
+    const notes = [];
+    if (r.estimated) notes.push(`建築面積の記載がないため延床面積÷${fmt((p.floors || 0))}階=${fmt(r.footprintUsed, 1)}m²と推定`);
+    if (r.designatedEstimated) notes.push(`指定${label}は物件情報に記載がないため用途地域「${escapeHtml(p.useZone || '')}」の標準値で推定`);
+    const est = notes.length ? `<br><span class="hint">${notes.join('／')}</span>` : '';
+    const dmark = r.designatedEstimated ? '※' : '';
+    return `<div><span class="k">${label}</span><span class="v">実際 ${fmt(r.actual, 1)}% / 指定 ${fmt(r.designated, 1)}%${dmark} ${status}${est}</span></div>`;
   };
 
   return `
@@ -577,6 +628,9 @@ function fillForm(p) {
   document.getElementById('f_occupancy').value = p.occupancy || '';
   document.getElementById('f_rentBasisArea').value = p.rentBasisArea || '';
   footprintFieldEstimated = !!p.footprintEstimated;
+  coverageFieldEstimated = !!p.coverageEstimated;
+  farFieldEstimated = !!p.farEstimated;
+  useZoneParsed = p.useZone || '';
 
   clearCompRows();
   (p.comps && p.comps.length ? p.comps : []).forEach(c => addCompRow(c));
@@ -628,6 +682,9 @@ function saveForm() {
     comps: readCompRows()
   };
   data.footprintEstimated = footprintFieldEstimated && data.footprintArea > 0;
+  data.coverageEstimated = coverageFieldEstimated && data.coverageDesignated > 0;
+  data.farEstimated = farFieldEstimated && data.farDesignated > 0;
+  data.useZone = useZoneParsed;
 
   if (editingId) {
     const idx = properties.findIndex(p => p.id === editingId);
@@ -646,8 +703,10 @@ document.getElementById('btnNewProperty').addEventListener('click', () => openFo
 document.getElementById('btnCancel').addEventListener('click', closeForm);
 document.getElementById('btnSave').addEventListener('click', saveForm);
 document.getElementById('btnAddComp').addEventListener('click', () => addCompRow());
-// 建築面積を手入力したら「推定値」フラグを解除(実測値として扱う)
+// 手入力したら該当の「推定値」フラグを解除(実測値として扱う)
 document.getElementById('f_footprintArea').addEventListener('input', () => { footprintFieldEstimated = false; });
+document.getElementById('f_coverageDesignated').addEventListener('input', () => { coverageFieldEstimated = false; });
+document.getElementById('f_farDesignated').addEventListener('input', () => { farFieldEstimated = false; });
 function applyParsedText(rawText) {
   const parsed = parseListingText(rawText);
   document.getElementById('f_address').value = parsed.address || '';
@@ -662,6 +721,9 @@ function applyParsedText(rawText) {
   document.getElementById('f_totalFloorArea').value = parsed.totalFloorArea || '';
   document.getElementById('f_coverageDesignated').value = parsed.coverageDesignated || '';
   document.getElementById('f_farDesignated').value = parsed.farDesignated || '';
+  coverageFieldEstimated = !!parsed.coverageEstimated;
+  farFieldEstimated = !!parsed.farEstimated;
+  useZoneParsed = parsed.useZone || '';
   document.getElementById('f_cityPlanning').value = parsed.cityPlanning || '';
   document.getElementById('f_occupancy').value = parsed.occupancy || '';
 }
