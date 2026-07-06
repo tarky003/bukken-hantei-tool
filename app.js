@@ -42,9 +42,11 @@ function parseListingText(text) {
     return '';
   };
 
-  result.address = grab([/(?:所在地|住所)[:：]?\s*([^\n]+)/]);
+  // 住所は空白以降にサイトの飾り文言(「川越市の価格 相場」等)が続くことがあるため最初の空白で切る
+  result.address = grab([/(?:所在地|住所)[:：]?\s*([^\n]+)/]).split(/[\s　]/)[0];
   result.structure = grab([/構造[:：]?\s*([^\n,、]+)/]);
-  result.builtYear = grab([/(?:築年月|建築年月|完成時期)[:：]?\s*([^\n,、]+)/]);
+  // 築年月の後ろに別項目のラベル(「階建 /」等)が続くことがあるため取り除く
+  result.builtYear = grab([/(?:築年月|建築年月|完成時期)[:：]?\s*([^\n,、]+)/]).replace(/[\s　]*階建.*$/, '').trim();
 
   const priceStr = grab([/(?:価格|売買価格|販売価格)[:：]?\s*([\d,，]+)\s*万円/]);
   result.price = priceStr ? Number(priceStr.replace(/[,，]/g, '')) : '';
