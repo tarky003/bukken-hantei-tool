@@ -124,7 +124,7 @@ function buildBookmarkletSource(toolUrl, toolOrigin) {
           if (dds[k]) addPair(dts[k].innerText, dds[k].innerText);
         }
       }
-      // 表やdlで拾えないサイト(ニフティ等)向けに、本文テキストも取得しておく
+      /* 表やdlで拾えないサイト(ニフティ等)向けに、本文テキストも取得しておく */
       function pickMainText() {
         var sels = ['main', 'article', '[role=main]', '#main', '#contents', '#detail', '.detail', '.main'];
         var best = document.body, bestLen = (document.body.innerText || '').length;
@@ -146,7 +146,14 @@ function buildBookmarkletSource(toolUrl, toolOrigin) {
         navigator.clipboard.writeText(text).catch(function () {});
       }
       var url = '__TOOL_URL__#prefill=' + encodeURIComponent(text);
-      window.open(url, '_blank');
+      /* ポップアップブロックを避けるため、アンカーのクリックで新しいタブを開く */
+      var a = document.createElement('a');
+      a.href = url;
+      a.target = '_blank';
+      a.rel = 'noopener';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
     } catch (e) {
       alert('物件情報の取得に失敗しました: ' + (e && e.message));
     }
