@@ -124,11 +124,24 @@ function buildBookmarkletSource(toolUrl, toolOrigin) {
           if (dds[k]) addPair(dts[k].innerText, dds[k].innerText);
         }
       }
-      if (pairs.length === 0) {
-        alert('このページから物件情報らしき項目を検出できませんでした。物件の詳細ページ(価格・面積などの表がある画面)で実行してください。');
+      // 表やdlで拾えないサイト(ニフティ等)向けに、本文テキストも取得しておく
+      function pickMainText() {
+        var sels = ['main', 'article', '[role=main]', '#main', '#contents', '#detail', '.detail', '.main'];
+        var best = document.body, bestLen = (document.body.innerText || '').length;
+        for (var s = 0; s < sels.length; s++) {
+          var el = document.querySelector(sels[s]);
+          if (el) { var t = (el.innerText || ''); if (t.length > 200 && t.length < bestLen) { best = el; bestLen = t.length; } }
+        }
+        return (best.innerText || '').replace(/[ \t]+/g, ' ').replace(/\n{2,}/g, '\n').slice(0, 15000);
+      }
+      var bodyText = pickMainText();
+      var text = '取得元URL：' + location.href + '\n'
+        + (pairs.length ? pairs.join('\n') + '\n----（ページ本文）----\n' : '')
+        + bodyText;
+      if (!/価格|面積|建ぺい|建蔽|容積|㎡|m²/.test(text)) {
+        alert('このページから物件情報らしき項目を検出できませんでした。物件の詳細ページ(価格・面積などが載っている画面)で実行してください。');
         return;
       }
-      var text = '取得元URL：' + location.href + '\n' + pairs.join('\n');
       if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(text).catch(function () {});
       }

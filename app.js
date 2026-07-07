@@ -72,30 +72,50 @@ function parseListingText(text) {
     }
     return '';
   };
+  // 全角数字を半角に変換
+  const toHalfNum = (s) => s.replace(/[０-９]/g, c => '０１２３４５６７８９'.indexOf(c));
+  // 全角数字・全角記号を含む文字列を数値に(カンマ除去・全角小数点対応)
+  const toNum = (s) => {
+    if (!s) return '';
+    const n = Number(toHalfNum(s).replace(/[，]/g, '').replace(/,/g, '').replace(/．/g, '.'));
+    return Number.isFinite(n) ? n : '';
+  };
+  const AREA_UNIT = '(?:m²|m2|㎡|平米|平方メートル|平方m)';
 
   // 住所は空白以降にサイトの飾り文言(「川越市の価格 相場」等)が続くことがあるため最初の空白で切る
   result.address = grab([/(?:所在地|住所)[:：]?\s*([^\n]+)/]).split(/[\s　]/)[0];
-  result.structure = grab([/構造[:：]?\s*([^\n,、]+)/]);
+  // 構造は後ろに別項目(「最多価格帯 －」等)が続くことがあるため最初の空白で切る
+  result.structure = grab([/(?:建物構造|構造)[:：]?\s*([^\n,、]+)/]).split(/[\s　]/)[0];
   // 築年月の後ろに別項目のラベル(「階建 /」等)が続くことがあるため取り除く
   result.builtYear = grab([/(?:築年月|建築年月|完成時期)[:：]?\s*([^\n,、]+)/]).replace(/[\s　]*階建.*$/, '').trim();
 
-  const priceStr = grab([/(?:価格|売買価格|販売価格)[:：]?\s*([\d,，]+)\s*万円/]);
-  result.price = priceStr ? Number(priceStr.replace(/[,，]/g, '')) : '';
+  // 価格(半角/全角数字・カンマに対応)
+  result.price = toNum(grab([/(?:販売価格|売買価格|価格)[:：]?\s*([\d,，０-９]+)\s*万円/])) || '';
+  // 「価格」ラベルが無いサイト(ニフティ等)向け: 本文中の最初の100万円以上の金額を主たる価格とみなす
+  // (月々のローン・ボーナス払い等の小額や、直前に返済/ローン/目安が付く金額は除外)
+  if (!result.price) {
+    var pm, pre = /([0-9０-９][0-9０-９,，]*)\s*万円/g;
+    while ((pm = pre.exec(text)) !== null) {
+      var val = toNum(pm[1]);
+      var before = text.slice(Math.max(0, pm.index - 10), pm.index);
+      if (val >= 100 && val <= 100000 && !/(月々|ローン|ボーナス|返済|目安|年間|価格帯)/.test(before)) {
+        result.price = val;
+        break;
+      }
+    }
+  }
 
   // 諸費用は販売価格の7%(概算)を自動入力
   result.costs = result.price > 0 ? Math.round(result.price * 0.07) : '';
 
-  const landStr = grab([/(?:土地面積|敷地面積)[:：]?\s*([\d,，.]+)\s*(?:m²|m2|㎡)/]);
-  result.landArea = landStr ? Number(landStr.replace(/[,，]/g, '')) : '';
-
-  const footprintStr = grab([/建築面積[:：]?\s*([\d,，.]+)\s*(?:m²|m2|㎡)/]);
-  result.footprintArea = footprintStr ? Number(footprintStr.replace(/[,，]/g, '')) : '';
-
-  const totalFloorStr = grab([/(?:延床面積|延べ床面積)[:：]?\s*([\d,，.]+)\s*(?:m²|m2|㎡)/, /建物面積[:：]?\s*([\d,，.]+)\s*(?:m²|m2|㎡)/]);
-  result.totalFloorArea = totalFloorStr ? Number(totalFloorStr.replace(/[,，]/g, '')) : '';
+  result.landArea = toNum(grab([new RegExp('(?:土地面積|敷地面積)[:：]?\\s*([\\d,，.０-９．]+)\\s*' + AREA_UNIT)])) || '';
+  result.footprintArea = toNum(grab([new RegExp('建築面積[:：]?\\s*([\\d,，.０-９．]+)\\s*' + AREA_UNIT)])) || '';
+  result.totalFloorArea = toNum(grab([
+    new RegExp('(?:延床面積|延べ床面積)[:：]?\\s*([\\d,，.０-９．]+)\\s*' + AREA_UNIT),
+    new RegExp('建物面積[:：]?\\s*([\\d,，.０-９．]+)\\s*' + AREA_UNIT)
+  ])) || '';
 
   // 地上階数(建築面積が未記載のとき延床面積÷階数で推定するために使用)
-  const toHalf = (s) => s.replace(/[０-９]/g, c => '０１２３４５６７８９'.indexOf(c));
   const floorsStr = grab([
     /([0-9０-９]+)\s*階\s*建/,
     /地上\s*([0-9０-９]+)\s*階/,
@@ -103,7 +123,7 @@ function parseListingText(text) {
     /階数[:：]?\s*([0-9０-９]+)/
   ]);
   if (floorsStr) {
-    result.floors = Number(toHalf(floorsStr));
+    result.floors = Number(toHalfNum(floorsStr));
   } else if (/平屋/.test(text)) {
     result.floors = 1;
   } else {
@@ -116,16 +136,14 @@ function parseListingText(text) {
     result.footprintEstimated = true;
   }
 
-  // combined 建ぺい率／容積率 pattern
-  const combined = text.match(/建(?:ぺい|蔽)率\s*[／\/]\s*容積率[:：]?\s*([\d.]+)\s*%\s*[／\/]\s*([\d.]+)\s*%/);
+  // 建ぺい率／容積率(全角％・全角数字・小数に対応)
+  const combined = text.match(/建(?:ぺい|蔽)率\s*[／\/]\s*容積率[:：]?\s*([\d.０-９．]+)\s*[%％]\s*[／\/]\s*([\d.０-９．]+)\s*[%％]/);
   if (combined) {
-    result.coverageDesignated = Number(combined[1]);
-    result.farDesignated = Number(combined[2]);
+    result.coverageDesignated = toNum(combined[1]);
+    result.farDesignated = toNum(combined[2]);
   } else {
-    const cov = grab([/(?:建ぺい率|建蔽率)[:：]?\s*([\d.]+)\s*%/]);
-    const far = grab([/容積率[:：]?\s*([\d.]+)\s*%/]);
-    result.coverageDesignated = cov ? Number(cov) : '';
-    result.farDesignated = far ? Number(far) : '';
+    result.coverageDesignated = toNum(grab([/(?:建ぺい率|建蔽率)[:：]?\s*([\d.０-９．]+)\s*[%％]/])) || '';
+    result.farDesignated = toNum(grab([/容積率[:：]?\s*([\d.０-９．]+)\s*[%％]/])) || '';
   }
 
   // 用途地域を読み取り、建蔽率・容積率が未記載なら用途地域の標準値で推定
@@ -142,8 +160,9 @@ function parseListingText(text) {
     }
   }
 
-  result.cityPlanning = grab([/都市計画[:：]?\s*([^\n,、]+)/]);
-  result.occupancy = grab([/(?:現況|入居状況)[:：]?\s*([^\n,、]+)/]);
+  // 都市計画・現況は後ろに別項目(「用途地域 …」「見学できる日を…」等)が続くことがあるため最初の空白で切る
+  result.cityPlanning = grab([/都市計画[:：]?\s*([^\n,、]+)/]).split(/[\s　]/)[0];
+  result.occupancy = grab([/(?:現況|入居状況)[:：]?\s*([^\n,、]+)/]).split(/[\s　]/)[0];
 
   // 再建築不可(備考・接道欄などテキスト全体から検出)。「再建築可」は「建築不可」を含まないため誤検出しない
   result.notRebuildable = /再建築不可|建築不可/.test(text);
