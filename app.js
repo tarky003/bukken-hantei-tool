@@ -429,7 +429,7 @@ function renderCard(p) {
     <div class="card-summary-main">
       <div class="card-title">${escapeHtml(p.address || '(住所未入力)')}</div>
       <div class="card-sub">${escapeHtml(p.structure || '')} ${p.price ? '・' + fmt(p.price) + '万円' : ''}</div>
-      ${p.investigatedDate ? `<div class="card-date">📅 調査日 ${escapeHtml(p.investigatedDate)}</div>` : ''}
+      ${p.investigatedDate ? `<div class="card-date">📅 調査日時 ${escapeHtml(p.investigatedDate)}</div>` : ''}
     </div>
     <div class="card-summary-metrics">
       <div class="metric"><div class="value">${filterBadge}</div><div class="label">フィルタ</div></div>
@@ -609,7 +609,9 @@ function escapeHtml(str) {
 
 function todayStr() {
   const d = new Date();
-  return d.getFullYear() + '/' + String(d.getMonth() + 1).padStart(2, '0') + '/' + String(d.getDate()).padStart(2, '0');
+  const p = (n) => String(n).padStart(2, '0');
+  return d.getFullYear() + '/' + p(d.getMonth() + 1) + '/' + p(d.getDate())
+    + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
 }
 
 function deleteProperty(id) {
