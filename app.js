@@ -29,6 +29,7 @@ let properties = loadProperties();
 let settings = loadSettings();
 let editingId = null; // null = new property
 let openDetailIds = new Set();
+let selectedIds = new Set(); // 一括削除用の選択
 let footprintFieldEstimated = false; // 建築面積欄が自動推定値かどうか(手入力で解除)
 let coverageFieldEstimated = false;  // 建蔽率欄が用途地域からの推定値かどうか
 let farFieldEstimated = false;       // 容積率欄が用途地域からの推定値かどうか
@@ -392,12 +393,14 @@ function render() {
 
   if (properties.length === 0) {
     list.innerHTML = '<div class="empty-state">まだ物件が登録されていません。「＋ 物件を追加」から登録してください。</div>';
+    updateSelectionUI();
     return;
   }
 
   properties.forEach(p => {
     list.appendChild(renderCard(p));
   });
+  updateSelectionUI();
 }
 
 function renderCard(p) {
@@ -426,6 +429,7 @@ function renderCard(p) {
   const summary = document.createElement('div');
   summary.className = 'card-summary';
   summary.innerHTML = `
+    <label class="card-select" title="選択"><input type="checkbox" class="select-one" ${selectedIds.has(p.id) ? 'checked' : ''}></label>
     <div class="card-summary-main">
       <div class="card-title">${escapeHtml(p.address || '(住所未入力)')}</div>
       <div class="card-sub">${escapeHtml(p.structure || '')} ${p.price ? '・' + fmt(p.price) + '万円' : ''}</div>
@@ -442,8 +446,12 @@ function renderCard(p) {
     </div>
   `;
   summary.addEventListener('click', (e) => {
-    if (e.target.closest('.btn-edit') || e.target.closest('.btn-delete')) return;
+    if (e.target.closest('.btn-edit') || e.target.closest('.btn-delete') || e.target.closest('.card-select')) return;
     toggleDetail(p.id);
+  });
+  summary.querySelector('.select-one').addEventListener('change', (e) => {
+    if (e.target.checked) selectedIds.add(p.id); else selectedIds.delete(p.id);
+    updateSelectionUI();
   });
   summary.querySelector('.btn-edit').addEventListener('click', () => openForm(p.id));
   summary.querySelector('.btn-delete').addEventListener('click', () => deleteProperty(p.id));
@@ -617,9 +625,38 @@ function todayStr() {
 function deleteProperty(id) {
   if (!confirm('この物件を削除しますか？')) return;
   properties = properties.filter(p => p.id !== id);
+  selectedIds.delete(id);
   saveProperties(properties);
   render();
   attachDetailHandlers();
+  updateSelectionUI();
+}
+
+// 選択状態に応じてツールバーのボタン・全選択チェックを更新
+function updateSelectionUI() {
+  const validIds = new Set(properties.map(p => p.id));
+  for (const id of Array.from(selectedIds)) if (!validIds.has(id)) selectedIds.delete(id);
+
+  const btn = document.getElementById('btnDeleteSelected');
+  const count = selectedIds.size;
+  btn.disabled = count === 0;
+  btn.textContent = count > 0 ? `選択した${count}件を削除` : '選択した物件を削除';
+
+  const selectAll = document.getElementById('selectAll');
+  selectAll.checked = properties.length > 0 && count === properties.length;
+  selectAll.indeterminate = count > 0 && count < properties.length;
+}
+
+function deleteSelected() {
+  const count = selectedIds.size;
+  if (count === 0) return;
+  if (!confirm(`選択した${count}件の物件を削除しますか？`)) return;
+  properties = properties.filter(p => !selectedIds.has(p.id));
+  selectedIds.clear();
+  saveProperties(properties);
+  render();
+  attachDetailHandlers();
+  updateSelectionUI();
 }
 
 /* ---------- form ---------- */
@@ -743,6 +780,14 @@ document.getElementById('btnNewProperty').addEventListener('click', () => openFo
 document.getElementById('btnCancel').addEventListener('click', closeForm);
 document.getElementById('btnSave').addEventListener('click', saveForm);
 document.getElementById('btnAddComp').addEventListener('click', () => addCompRow());
+document.getElementById('btnDeleteSelected').addEventListener('click', deleteSelected);
+document.getElementById('selectAll').addEventListener('change', (e) => {
+  if (e.target.checked) properties.forEach(p => selectedIds.add(p.id));
+  else selectedIds.clear();
+  render();
+  attachDetailHandlers();
+  updateSelectionUI();
+});
 // 手入力したら該当の「推定値」フラグを解除(実測値として扱う)
 document.getElementById('f_footprintArea').addEventListener('input', () => { footprintFieldEstimated = false; });
 document.getElementById('f_coverageDesignated').addEventListener('input', () => { coverageFieldEstimated = false; });
@@ -807,4 +852,5 @@ document.getElementById('selfFundRatio').addEventListener('change', (e) => {
 
 render();
 attachDetailHandlers();
+updateSelectionUI();
 handlePrefillFromHash();
